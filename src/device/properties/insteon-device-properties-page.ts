@@ -78,6 +78,7 @@ class InsteonDevicePropertiesPage extends LitElement {
     this._device = undefined;
     this._properties = [];
     this._schema = undefined;
+    this._showWait = false;
     fetchInsteonDevice(this.hass, token).then(
       (device) => {
         if (this.deviceId !== token) {
@@ -188,22 +189,35 @@ class InsteonDevicePropertiesPage extends LitElement {
     });
   }
 
+  private _isCurrent(address: string): boolean {
+    return this._device?.address === address;
+  }
+
   private async _load() {
+    const address = this._device!.address;
     if (this._device!.is_battery) {
       await showAlertDialog(this, {
         text: this.insteon.localize("common.warn.wake_up"),
       });
+      if (!this._isCurrent(address)) {
+        return;
+      }
     }
     this._showWait = true;
     try {
-      await loadProperties(this.hass, this._device!.address);
+      await loadProperties(this.hass, address);
     } catch (err) {
-      showAlertDialog(this, {
-        text: this.insteon!.localize("common.error.load"),
-        confirmText: this.insteon!.localize("common.close"),
-      });
+      if (this._isCurrent(address)) {
+        showAlertDialog(this, {
+          text: this.insteon!.localize("common.error.load"),
+          confirmText: this.insteon!.localize("common.close"),
+        });
+      }
     }
-    this._showWait = false;
+    // A different device may be selected by now; its own load owns _showWait.
+    if (this._isCurrent(address)) {
+      this._showWait = false;
+    }
   }
 
   private async _onWritePropertiesClick() {
@@ -216,19 +230,28 @@ class InsteonDevicePropertiesPage extends LitElement {
   }
 
   private async _write() {
+    const address = this._device!.address;
     if (this._device!.is_battery) {
       await showAlertDialog(this, {
         text: this.insteon.localize("common.warn.wake_up"),
       });
+      if (!this._isCurrent(address)) {
+        return;
+      }
     }
     this._showWait = true;
     try {
-      await writeProperties(this.hass, this._device!.address);
+      await writeProperties(this.hass, address);
     } catch (err) {
-      showAlertDialog(this, {
-        text: this.insteon!.localize("common.error.write"),
-        confirmText: this.insteon!.localize("common.close"),
-      });
+      if (this._isCurrent(address)) {
+        showAlertDialog(this, {
+          text: this.insteon!.localize("common.error.write"),
+          confirmText: this.insteon!.localize("common.close"),
+        });
+      }
+    }
+    if (!this._isCurrent(address)) {
+      return;
     }
     this._getProperties();
     this._showWait = false;
@@ -247,8 +270,11 @@ class InsteonDevicePropertiesPage extends LitElement {
   }
 
   private _onResetPropertiesClick = async () => {
-    await resetProperties(this.hass, this._device!.address);
-    this._getProperties();
+    const address = this._device!.address;
+    await resetProperties(this.hass, address);
+    if (this._isCurrent(address)) {
+      this._getProperties();
+    }
   };
 
   private async _handleRowClicked(ev: HASSDomEvent<RowClickedEvent>) {
@@ -268,8 +294,11 @@ class InsteonDevicePropertiesPage extends LitElement {
   }
 
   private async _handlePropertyChange(name: string, value: any) {
-    await changeProperty(this.hass, this._device!.address, name, value);
-    this._getProperties();
+    const address = this._device!.address;
+    await changeProperty(this.hass, address, name, value);
+    if (this._isCurrent(address)) {
+      this._getProperties();
+    }
   }
 
   private _handleBackTapped = async () => {

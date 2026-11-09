@@ -272,13 +272,17 @@ class InsteonDeviceALDBPage extends LitElement {
   }
 
   private async _load() {
+    const address = this._device!.address;
     if (this._device!.is_battery) {
       await showAlertDialog(this, {
         text: this.insteon.localize("common.warn.wake_up"),
       });
+      if (!this._isCurrent(address)) {
+        return;
+      }
     }
     this._subscribe();
-    loadALDB(this.hass, this._device!.address);
+    loadALDB(this.hass, address);
     this._isLoading = true;
     this._records = [];
   }
@@ -303,13 +307,17 @@ class InsteonDeviceALDBPage extends LitElement {
   }
 
   private async _write() {
+    const address = this._device!.address;
     if (this._device!.is_battery) {
       await showAlertDialog(this, {
         text: this.insteon.localize("common.warn.wake_up"),
       });
+      if (!this._isCurrent(address)) {
+        return;
+      }
     }
     this._subscribe();
-    writeALDB(this.hass, this._device!.address);
+    writeALDB(this.hass, address);
     this._isLoading = true;
     this._records = [];
   }
@@ -327,13 +335,17 @@ class InsteonDeviceALDBPage extends LitElement {
   }
 
   private async _addDefaultLinks() {
+    const address = this._device!.address;
     if (this._device!.is_battery) {
       await showAlertDialog(this, {
         text: this.insteon.localize("common.warn.wake_up"),
       });
+      if (!this._isCurrent(address)) {
+        return;
+      }
     }
     this._subscribe();
-    addDefaultLinks(this.hass, this._device!.address);
+    addDefaultLinks(this.hass, address);
     this._records = [];
   }
 
@@ -411,12 +423,25 @@ class InsteonDeviceALDBPage extends LitElement {
     navigate("/insteon/devices");
   };
 
-  private _handleMessage(message: AldbNotification): void {
+  private _isCurrent(address: string): boolean {
+    return this._device?.address === address;
+  }
+
+  private _handleMessage(address: string, message: AldbNotification): void {
+    // The subscription belongs to the device that was selected when it was
+    // opened. Ignore anything that arrives after the user moved on.
+    if (!this._isCurrent(address)) {
+      return;
+    }
     if (message.type === "record_loaded") {
       this._getRecords();
     }
     if (message.type === "status_changed") {
-      fetchInsteonDevice(this.hass, this.deviceId!).then((device) => {
+      const token = this.deviceId!;
+      fetchInsteonDevice(this.hass, token).then((device) => {
+        if (this.deviceId !== token || !this._isCurrent(address)) {
+          return;
+        }
         this._device = device;
       });
       this._isLoading = message.is_loading ?? false;
@@ -429,6 +454,7 @@ class InsteonDeviceALDBPage extends LitElement {
   private _unsubscribe(): void {
     if (this._refreshDevicesTimeoutHandle) {
       clearTimeout(this._refreshDevicesTimeoutHandle);
+      this._refreshDevicesTimeoutHandle = undefined;
     }
     if (this._subscribed) {
       this._subscribed.then((unsub) => unsub());
@@ -440,8 +466,10 @@ class InsteonDeviceALDBPage extends LitElement {
     if (!this.hass) {
       return;
     }
-    this._subscribed = subscribeAldbLoading(this.hass, this._device!.address, (message) =>
-      this._handleMessage(message),
+    this._unsubscribe();
+    const address = this._device!.address;
+    this._subscribed = subscribeAldbLoading(this.hass, address, (message) =>
+      this._handleMessage(address, message),
     );
     this._refreshDevicesTimeoutHandle = window.setTimeout(() => this._unsubscribe(), 1200000);
   }

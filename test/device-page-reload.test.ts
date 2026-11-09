@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { showAlertDialog } from "@ha/dialogs/generic/show-dialog-box";
 
 vi.mock("@ha/layouts/hass-tabs-subpage", () => ({}));
 vi.mock("@ha/components/ha-button", () => ({}));
@@ -43,7 +44,7 @@ const deferred = (): Deferred => {
   return { resolve, promise };
 };
 
-const makeHass = (hold?: Record<string, Deferred>) => ({
+const makeHass = (hold?: Record<string, Deferred>, fail: string[] = []) => ({
   localize: (key: string) => key,
   userData: { showAdvanced: false },
   callWS: vi.fn(async (msg: { type: string; device_id?: string; device_address?: string }) => {
@@ -54,6 +55,12 @@ const makeHass = (hold?: Record<string, Deferred>) => ({
     const pending = hold?.[address];
     if (pending) {
       await pending.promise;
+    }
+    if (fail.includes(msg.type)) {
+      throw new Error("failed " + msg.type);
+    }
+    if (msg.type === "insteon/properties/load" || msg.type === "insteon/properties/write") {
+      return undefined;
     }
     if (msg.type === "insteon/properties/get") {
       return {
@@ -147,5 +154,92 @@ describe("device pages reload when the router reuses them", () => {
     hold["11.11.11"].resolve(undefined);
     await settle(el);
     expect(el._records.map((r: any) => r.target)).toEqual(["22.22.22"]);
+  });
+});
+
+const wsCalls = (hass: ReturnType<typeof makeHass>, type: string, address?: string) =>
+  hass.callWS.mock.calls.filter(
+    ([msg]) => msg.type === type && (address === undefined || msg.device_address === address),
+  ).length;
+
+describe("work started for one device does not leak into the next", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    vi.mocked(showAlertDialog).mockClear();
+  });
+
+  it("ALDB page ignores loading messages for the previous device", async () => {
+    const hass = makeHass();
+    const el = await mount("insteon-device-aldb-page", hass);
+    el._subscribe();
+    const [[notify, request]] = hass.connection.subscribeMessage.mock.calls as any;
+    expect(request.device_address).toBe("11.11.11");
+
+    el.deviceId = "dev-2";
+    await settle(el);
+    const aldbGets = wsCalls(hass, "insteon/aldb/get");
+    const deviceGets = wsCalls(hass, "insteon/device/get");
+
+    notify({ type: "record_loaded" });
+    notify({ type: "status_changed", is_loading: true });
+    await settle(el);
+
+    expect(wsCalls(hass, "insteon/aldb/get")).toBe(aldbGets);
+    expect(wsCalls(hass, "insteon/device/get")).toBe(deviceGets);
+    expect(el._isLoading).toBe(false);
+    expect(el._device.address).toBe("22.22.22");
+    expect(el._records.map((r: any) => r.target)).toEqual(["22.22.22"]);
+  });
+
+  it("ALDB page replaces, rather than stacks, its loading subscription", async () => {
+    const unsub = vi.fn(async () => {});
+    const hass = makeHass();
+    hass.connection.subscribeMessage.mockImplementation(async () => unsub);
+    const el = await mount("insteon-device-aldb-page", hass);
+    el._subscribe();
+    el._subscribe();
+    await settle(el);
+    expect(unsub).toHaveBeenCalledTimes(1);
+  });
+
+  it("properties page clears the wait spinner and skips the refresh after a late write", async () => {
+    const hold: Record<string, Deferred> = {};
+    const hass = makeHass(hold);
+    const el = await mount("insteon-device-properties-page", hass);
+    hold["11.11.11"] = deferred();
+    const writing = el._write();
+    await settle(el);
+    expect(el._showWait).toBe(true);
+
+    el.deviceId = "dev-2";
+    await settle(el);
+    expect(el._showWait).toBe(false);
+    const oldGets = wsCalls(hass, "insteon/properties/get", "11.11.11");
+
+    hold["11.11.11"].resolve(undefined);
+    await writing;
+    await settle(el);
+
+    expect(wsCalls(hass, "insteon/properties/get", "11.11.11")).toBe(oldGets);
+    expect(el._showWait).toBe(false);
+    expect(el._properties.map((p: any) => p.name)).toEqual(["prop_22.22.22"]);
+  });
+
+  it("properties page does not report a failed load for the previous device", async () => {
+    const hold: Record<string, Deferred> = {};
+    const hass = makeHass(hold, ["insteon/properties/load"]);
+    const el = await mount("insteon-device-properties-page", hass);
+    hold["11.11.11"] = deferred();
+    const loading = el._load();
+    await settle(el);
+
+    el.deviceId = "dev-2";
+    await settle(el);
+    hold["11.11.11"].resolve(undefined);
+    await loading;
+    await settle(el);
+
+    expect(showAlertDialog).not.toHaveBeenCalled();
+    expect(el._showWait).toBe(false);
   });
 });
